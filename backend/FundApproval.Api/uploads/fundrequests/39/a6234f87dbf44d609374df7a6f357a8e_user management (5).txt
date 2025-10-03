@@ -1,0 +1,561 @@
+// src/components/admin/UserManagement.jsx
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Box, Paper, Typography, Grid, Button, IconButton, Divider,
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField,
+  Chip, Stack, CircularProgress,
+  Table, TableHead, TableBody, TableRow, TableCell,
+  TableContainer, TablePagination, Tooltip
+} from "@mui/material";
+import Autocomplete from "@mui/material/Autocomplete";
+import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
+import VpnKeyIcon from "@mui/icons-material/VpnKey";
+import AssignmentIndIcon from "@mui/icons-material/AssignmentInd";
+import RefreshIcon from "@mui/icons-material/Refresh";
+
+const API = "http://localhost:5292/api";
+const authHeaders = () => {
+  const token = localStorage.getItem("token");
+  return token
+    ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+    : { "Content-Type": "application/json" };
+};
+
+// 🔹 Adjust if your Role IDs/Names differ
+const ROLES = [
+  { id: 1, name: "Admin" },
+  { id: 2, name: "Approver" },
+  { id: 3, name: "User" },
+];
+
+export default function UserManagement() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // reference data (independent entities)
+  const [refLoading, setRefLoading] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]); // ← no dept filter
+  const [projects, setProjects] = useState([]);
+
+  // dialogs
+  const [openCreate, setOpenCreate] = useState(false);
+  const [openPwd, setOpenPwd] = useState(false);
+  const [openAssign, setOpenAssign] = useState(false);
+
+  // selected user (for pwd/assign)
+  const [selectedUser, setSelectedUser] = useState(null);
+
+  // create form (IDs are still sent; UI shows names)
+  const [createForm, setCreateForm] = useState({
+    username: "",
+    fullName: "",
+    email: "",
+    password: "",
+    role: 0,
+    departmentId: "",
+    designationId: "",
+    mobile: "",
+    gender: "",
+  });
+  const [roleOption, setRoleOption] = useState(null);
+  const [deptOption, setDeptOption] = useState(null);
+  const [desigOption, setDesigOption] = useState(null);
+
+  // projects chosen while creating the user
+  const [createProjectIds, setCreateProjectIds] = useState([]);
+
+  // password form
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  // assign dialog
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [userProjectIds, setUserProjectIds] = useState([]);
+
+  // table pagination
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  // ---- Users ----
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/admin/users`, { headers: authHeaders() });
+      const data = res.ok ? await res.json() : [];
+      const list = Array.isArray(data) ? data : [];
+      setRows(
+        list.map((u) => ({
+          id: u.id ?? u.userID ?? u.UserID,
+          username: u.username ?? u.userName,
+          fullName: u.fullName ?? u.FullName,
+          email: u.email ?? u.EmailID ?? "",
+          role: u.role ?? u.RoleID ?? 0,
+          departmentId: u.departmentId ?? u.DepartmentID ?? null,
+          designationId: u.designationId ?? u.DesignationId ?? null,
+          mobile: u.mobile ?? u.MobileNumber ?? "",
+          gender: u.gender ?? u.Gender ?? "",
+        }))
+      );
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---- Reference data (independent lists) ----
+  const fetchDepartments = async () => {
+    try {
+      const res = await fetch(`${API}/admin/departments`, { headers: authHeaders() });
+      const data = res.ok ? await res.json() : [];
+      return (Array.isArray(data) ? data : []).map((d) => ({
+        id: d.departmentId ?? d.id,
+        name: d.name ?? d.departmentName,
+        isActive: d.isActive ?? d.IsActive ?? true,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const fetchDesignations = async () => {
+    // global list, no department coupling
+    try {
+      // try admin endpoint first
+      let res = await fetch(`${API}/admin/designations`, { headers: authHeaders() });
+      if (!res.ok) {
+        // fallback to public endpoint if your API exposes it
+        res = await fetch(`${API}/designations`, { headers: authHeaders() });
+      }
+      const data = res.ok ? await res.json() : [];
+      return (Array.isArray(data) ? data : []).map((x) => ({
+        id: x.id ?? x.designationID ?? x.DesignationID,
+        name: x.name ?? x.designationName ?? x.DesignationName,
+        isActive: x.isActive ?? x.IsActive ?? true,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const fetchProjects = async () => {
+    try {
+      const res = await fetch(`${API}/admin/projects`, { headers: authHeaders() });
+      const data = res.ok ? await res.json() : [];
+      return (Array.isArray(data) ? data : []).map((p) => ({
+        projectId: p.projectId ?? p.id ?? p.ProjectID,
+        projectName: p.projectName ?? p.name ?? p.ProjectName,
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  const fetchRefs = async () => {
+    setRefLoading(true);
+    try {
+      const [deptList, desigList, projectList] = await Promise.all([
+        fetchDepartments(),
+        fetchDesignations(),
+        fetchProjects(),
+      ]);
+      setDepartments(deptList);
+      setDesignations(desigList); // ← one global list
+      setProjects(projectList);
+    } finally {
+      setRefLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+    fetchRefs();
+  }, []);
+
+  const pagedRows = useMemo(() => {
+    const start = page * rowsPerPage;
+    return rows.slice(start, start + rowsPerPage);
+  }, [rows, page, rowsPerPage]);
+
+  // ----- Create user -----
+  const handleOpenCreate = () => {
+    setCreateForm({
+      username: "",
+      fullName: "",
+      email: "",
+      password: "",
+      role: 0,
+      departmentId: "",
+      designationId: "",
+      mobile: "",
+      gender: "",
+    });
+    setRoleOption(null);
+    setDeptOption(null);
+    setDesigOption(null);
+    setCreateProjectIds([]);
+    setOpenCreate(true);
+  };
+
+  const createUser = async () => {
+    const payload = {
+      username: createForm.username?.trim(),
+      fullName: createForm.fullName?.trim(),
+      email: createForm.email?.trim() || null,
+      passwordHash: createForm.password || null, // maps to "Password" column
+      role: Number(createForm.role) || 0,
+      departmentId: createForm.departmentId ? Number(createForm.departmentId) : null,
+      designationId: createForm.designationId ? Number(createForm.designationId) : null,
+      mobile: createForm.mobile?.trim() || null,
+      gender: createForm.gender?.trim() || null,
+    };
+
+    // 1) Create user
+    const res = await fetch(`${API}/admin/users`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      alert(`Failed to create user: ${msg}`);
+      return;
+    }
+    const created = await res.json();
+    const newId = created?.id ?? created?.userID ?? created?.UserID;
+
+    // 2) Assign selected projects (if any)
+    if (newId && createProjectIds.length > 0) {
+      const aRes = await fetch(`${API}/admin/users/${newId}/projects`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ projectIds: createProjectIds }),
+      });
+      if (!aRes.ok) {
+        const msg = await aRes.text();
+        alert(`User created but failed to assign projects: ${msg}`);
+      }
+    }
+
+    setOpenCreate(false);
+    fetchUsers();
+  };
+
+  // ----- Password -----
+  const handleOpenPwd = (user) => {
+    setSelectedUser(user);
+    setNewPassword("");
+    setConfirmPassword("");
+    setOpenPwd(true);
+  };
+
+  const changePassword = async () => {
+    if (!selectedUser) return;
+    if (!newPassword?.trim() || newPassword !== confirmPassword) {
+      alert("Passwords do not match.");
+      return;
+    }
+    const res = await fetch(`${API}/admin/users/${selectedUser.id}/password`, {
+      method: "PUT",
+      headers: authHeaders(),
+      body: JSON.stringify({ newPassword }),
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      alert(`Failed to set password: ${msg}`);
+      return;
+    }
+    setOpenPwd(false);
+  };
+
+  // ----- Assign projects (from table action) -----
+  const handleOpenAssign = async (user) => {
+    setSelectedUser(user);
+    setAssignLoading(true);
+    setOpenAssign(true);
+    try {
+      if (!projects.length) setProjects(await fetchProjects());
+      const aRes = await fetch(`${API}/admin/users/${user.id}/projects`, { headers: authHeaders() });
+      const aData = aRes.ok ? await aRes.json() : { projectIds: [] };
+      setUserProjectIds(Array.isArray(aData.projectIds) ? aData.projectIds : []);
+    } finally {
+      setAssignLoading(false);
+    }
+  };
+
+  const saveAssignments = async () => {
+    if (!selectedUser) return;
+    const res = await fetch(`${API}/admin/users/${selectedUser.id}/projects`, {
+      method: "PUT",
+      headers: authHeaders(),
+      body: JSON.stringify({ projectIds: userProjectIds }),
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      alert(`Failed to assign projects: ${msg}`);
+      return;
+    }
+    setOpenAssign(false);
+  };
+
+  return (
+    <Box sx={{ p: { xs: 1.5, md: 3 } }}>
+      <Paper sx={{ p: 2, borderRadius: 3 }}>
+        <Grid container alignItems="center" spacing={2}>
+          <Grid item xs>
+            <Typography variant="h5" fontWeight={800}>Manage Users</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Create users, reset passwords, and assign projects.
+            </Typography>
+          </Grid>
+          <Grid item>
+            <Button startIcon={<RefreshIcon />} sx={{ mr: 1 }} onClick={fetchUsers}>
+              Refresh
+            </Button>
+            <Button variant="contained" startIcon={<PersonAddAlt1Icon />} onClick={handleOpenCreate}>
+              Add User
+            </Button>
+          </Grid>
+        </Grid>
+
+        <Divider sx={{ my: 2 }} />
+
+        <TableContainer component={Paper} elevation={0}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ fontWeight: 700 }}>ID</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Username</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Full Name</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Email</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>RoleID</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Actions</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} align="center">
+                    <CircularProgress size={24} />
+                  </TableCell>
+                </TableRow>
+              ) : pagedRows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} align="center">
+                    No users found.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                pagedRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{row.id}</TableCell>
+                    <TableCell>{row.username}</TableCell>
+                    <TableCell>{row.fullName}</TableCell>
+                    <TableCell>{row.email}</TableCell>
+                    <TableCell>{row.role}</TableCell>
+                    <TableCell>
+                      <Stack direction="row" spacing={1}>
+                        <Tooltip title="Change Password">
+                          <IconButton size="small" onClick={() => handleOpenPwd(row)}>
+                            <VpnKeyIcon />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Assign Projects">
+                          <IconButton size="small" onClick={() => handleOpenAssign(row)}>
+                            <AssignmentIndIcon />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+
+        <TablePagination
+          component="div"
+          count={rows.length}
+          page={page}
+          onPageChange={(_, p) => setPage(p)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => {
+            setRowsPerPage(parseInt(e.target.value, 10));
+            setPage(0);
+          }}
+          rowsPerPageOptions={[10, 25, 50]}
+        />
+      </Paper>
+
+      {/* Create User Dialog */}
+      <Dialog open={openCreate} onClose={() => setOpenCreate(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Create User</DialogTitle>
+        <DialogContent dividers>
+          <Grid container spacing={2} sx={{ pt: 1 }}>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Username" fullWidth value={createForm.username} onChange={e => setCreateForm(f => ({ ...f, username: e.target.value }))} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Full Name" fullWidth value={createForm.fullName} onChange={e => setCreateForm(f => ({ ...f, fullName: e.target.value }))} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Email" fullWidth value={createForm.email} onChange={e => setCreateForm(f => ({ ...f, email: e.target.value }))} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Mobile" fullWidth value={createForm.mobile} onChange={e => setCreateForm(f => ({ ...f, mobile: e.target.value }))} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Password" type="password" fullWidth value={createForm.password} onChange={e => setCreateForm(f => ({ ...f, password: e.target.value }))} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField label="Gender" fullWidth value={createForm.gender} onChange={e => setCreateForm(f => ({ ...f, gender: e.target.value }))} />
+            </Grid>
+
+            {/* Role (by name) */}
+            <Grid item xs={12} sm={6}>
+              <Autocomplete
+                options={ROLES}
+                loading={false}
+                value={roleOption}
+                onChange={(_, opt) => {
+                  setRoleOption(opt);
+                  setCreateForm((f) => ({ ...f, role: opt ? opt.id : 0 }));
+                }}
+                getOptionLabel={(o) => o?.name ?? ""}
+                renderInput={(params) => <TextField {...params} label="Role" placeholder="Select role" />}
+              />
+            </Grid>
+
+            {/* Department (by name) — independent */}
+            <Grid item xs={12} sm={6}>
+              <Autocomplete
+                options={departments}
+                loading={refLoading}
+                value={deptOption}
+                onChange={(_, opt) => {
+                  setDeptOption(opt);
+                  setCreateForm((f) => ({ ...f, departmentId: opt ? opt.id : "" }));
+                }}
+                getOptionLabel={(o) => o?.name ?? ""}
+                renderInput={(params) => (
+                  <TextField {...params} label="Department" placeholder="Select department" />
+                )}
+              />
+            </Grid>
+
+            {/* Designation (by name) — independent of Department */}
+            <Grid item xs={12} sm={6}>
+              <Autocomplete
+                options={designations}
+                loading={refLoading}
+                value={desigOption}
+                onChange={(_, opt) => {
+                  setDesigOption(opt);
+                  setCreateForm((f) => ({ ...f, designationId: opt ? opt.id : "" }));
+                }}
+                getOptionLabel={(o) => o?.name ?? ""}
+                renderInput={(params) => (
+                  <TextField {...params} label="Designation" placeholder="Select designation" />
+                )}
+              />
+            </Grid>
+
+            {/* Projects (multi-select) */}
+            <Grid item xs={12}>
+              <Autocomplete
+                multiple
+                options={projects}
+                loading={refLoading}
+                getOptionLabel={(o) => o.projectName ?? String(o.projectId)}
+                value={projects.filter((p) => createProjectIds.includes(p.projectId))}
+                onChange={(_, val) => setCreateProjectIds(val.map((v) => v.projectId))}
+                renderTags={(value, getTagProps) =>
+                  value.map((option, index) => (
+                    <Chip key={option.projectId} label={option.projectName} {...getTagProps({ index })} />
+                  ))
+                }
+                renderInput={(params) => (
+                  <TextField {...params} label="Projects" placeholder="Select one or more projects" />
+                )}
+              />
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenCreate(false)}>Cancel</Button>
+          <Button variant="contained" onClick={createUser} disabled={refLoading}>
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Change Password Dialog */}
+      <Dialog open={openPwd} onClose={() => setOpenPwd(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Change Password {selectedUser ? `— ${selectedUser.username}` : ""}</DialogTitle>
+        <DialogContent dividers>
+          <TextField
+            type="password"
+            label="New Password"
+            fullWidth
+            sx={{ mt: 1 }}
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+          <TextField
+            type="password"
+            label="Confirm Password"
+            fullWidth
+            sx={{ mt: 2 }}
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            error={!!confirmPassword && confirmPassword !== newPassword}
+            helperText={!!confirmPassword && confirmPassword !== newPassword ? "Passwords do not match" : " "}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenPwd(false)}>Cancel</Button>
+          <Button variant="contained" onClick={changePassword}>Save</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Assign Projects Dialog (from the table action) */}
+      <Dialog open={openAssign} onClose={() => setOpenAssign(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Assign Projects {selectedUser ? `— ${selectedUser.username}` : ""}</DialogTitle>
+        <DialogContent dividers>
+          {assignLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <>
+              <Autocomplete
+                multiple
+                options={projects}
+                getOptionLabel={(o) => o.projectName ?? String(o.projectId)}
+                value={projects.filter((p) => userProjectIds.includes(p.projectId))}
+                onChange={(_, val) => setUserProjectIds(val.map((v) => v.projectId))}
+                renderTags={(value, getTagProps) =>
+                  value.map((option, index) => (
+                    <Chip key={option.projectId} label={option.projectName} {...getTagProps({ index })} />
+                  ))
+                }
+                renderInput={(params) => <TextField {...params} label="Projects" placeholder="Select projects" />}
+              />
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {userProjectIds.length} project(s) selected
+                </Typography>
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenAssign(false)}>Close</Button>
+          <Button variant="contained" onClick={saveAssignments} disabled={assignLoading}>Save</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+}
